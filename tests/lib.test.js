@@ -217,3 +217,21 @@ test('spaarpotjes: saldo per potje en spaardoel telt alleen gekozen potjes', () 
   assert.equal(back.settings.items.find((i) => i.id === 'pot-a').goal, 60000);
   assert.equal(back.transactions.filter((t) => t.potId === 'pot-a').length, 2);
 });
+
+test('jaarlijkse posten: eindejaarsuitkering en vakantiegeld alleen in hun maand', () => {
+  let d = plan();
+  d.settings.items.splice(1, 0,
+    { id: 'eju', name: 'Eindejaarsuitkering', kind: 'income', amount: 150000, dueDay: 25, month: 11, active: true, aliases: F.deriveAliases('Eindejaarsuitkering') },
+    { id: 'vg', name: 'Vakantiegeld', kind: 'income', amount: 140000, dueDay: 25, month: 5, active: true, aliases: F.deriveAliases('Vakantiegeld') });
+  assert.equal(F.monthSummary(d, '2026-11', T).planned.income, 200000 + 150000);
+  assert.equal(F.monthSummary(d, '2027-05', T).planned.income, 200000 + 140000);
+  assert.equal(F.monthSummary(d, '2026-12', T).planned.income, 200000);
+  assert.ok(F.check(d, '2026-12', 'eju', {}, T).error);
+  let r = F.parseMessage('eindejaarsuitkering is binnen', d, T);
+  assert.equal(r.op, 'check'); assert.equal(r.itemId, 'eju');
+  r = F.parseMessage('salaris is binnen', d, T);
+  assert.equal(r.itemId, 'salaris');
+  assert.ok(!F.deriveAliases('Vakantiegeld').includes('vakantiepot'));
+  const back = F.importBackup(F.exportBackup(d), T).data;
+  assert.equal(back.settings.items.find((i) => i.id === 'vg').month, 5);
+});

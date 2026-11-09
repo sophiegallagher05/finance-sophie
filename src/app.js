@@ -321,7 +321,7 @@
     const sub = (r) => {
       if (r.kind === 'budget') return (r.closed ? 'Afgesloten · ' : '') + 'Besteed ' + F.fmt(r.spent) + ' van ' + F.fmt(r.item.amount) + (r.over ? ' · ' + F.fmt(r.over) + ' over' : '');
       if (r.done) return (r.kind === 'income' ? 'Ontvangen op ' : r.kind === 'bill' ? 'Betaald op ' : 'Gestort op ') + F.fmtDay(r.tx.date) + (r.tx.amount !== r.item.amount ? ' · ' + F.fmt(r.tx.amount) : '');
-      return r.item.dueDay ? (r.kind === 'income' ? 'Verwacht op de ' : 'Op de ') + r.item.dueDay + 'e' : 'Datum onbekend';
+      return (r.item.month ? 'Eén keer per jaar · ' : '') + (r.item.dueDay ? (r.kind === 'income' ? 'Verwacht op de ' : 'Op de ') + r.item.dueDay + 'e' : 'Datum onbekend');
     };
     const ratio = S.planned.available > 0 ? S.remaining / S.planned.available : 0;
     return html`<main className="page">
@@ -427,7 +427,7 @@
     const [err, setErr] = useState(null);
     const [confirm, setConfirm] = useState(false);
     const month = t && t.itemId && itemId === t.itemId ? t.month : preset && preset.month && itemId ? preset.month : F.isValidDate(date) ? F.monthOf(date) : F.monthOf(today);
-    const linkable = F.monthItemsAll(data, month).filter((i) => i.active && F.KIND_TX[i.kind] === type);
+    const linkable = F.monthItemsAll(data, month).filter((i) => i.active && F.inMonth(i, month) && F.KIND_TX[i.kind] === type);
     const save = () => {
       const p = F.parseAmount(amt); if (!p.ok) return setErr(p.error);
       const input = { type, amount: p.cents, date, note: note.trim(), category: cat.trim() || (itemId ? (linkable.find((i) => i.id === itemId) || {}).name || '' : ''), itemId: itemId && linkable.some((i) => i.id === itemId) ? itemId : undefined, potId: !itemId && type.startsWith('savings') && potId ? potId : undefined, month: itemId ? month : undefined };
@@ -622,10 +622,11 @@
     const setItem = (id, patch) => setS((o) => ({ ...o, items: o.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
     const setInp = (id, k, v) => setInputs((o) => ({ ...o, [id]: { ...o[id], [k]: v } }));
     const c = (str) => { const p = parseOr(str, 0); return p.ok ? p.cents : 0; };
-    const liveAvail = s.items.filter((i) => i.active).reduce((a, i) => a + (i.kind === 'income' ? 1 : -1) * c(inputs[i.id] ? inputs[i.id].amount : ''), 0);
+    const liveAvail = s.items.filter((i) => i.active && !i.month).reduce((a, i) => a + (i.kind === 'income' ? 1 : -1) * c(inputs[i.id] ? inputs[i.id].amount : ''), 0);
     const ORDER = { income: 0, bill: 1, budget: 1, savings: 2, reserve: 3 };
     const addItem = (kind, name = '') => { const id = F.uid(); setS((o) => ({ ...o, items: [...o.items, { id, name, kind, amount: 0, dueDay: null, active: true, aliases: [], ...(kind === 'savings' ? { inGoal: false, goal: 0 } : {}) }].map((x, n) => [x, n]).sort((a, b) => ORDER[a[0].kind] - ORDER[b[0].kind] || a[1] - b[1]).map((x) => x[0]) })); setInputs((o) => ({ ...o, [id]: { amount: '', day: '', goal: '' } })); };
     const firstPotId = (s.items.find((i) => i.kind === 'savings') || {}).id;
+    const firstIncomeId = (s.items.find((i) => i.kind === 'income') || {}).id;
     function savePlan() {
       const out = JSON.parse(JSON.stringify(s));
       for (const i of out.items) {
@@ -636,6 +637,7 @@
         if (!i.name.trim()) return setErr('Geef elke post een naam.');
         const old = data.settings.items.find((x) => x.id === i.id);
         i.name = i.name.trim(); i.amount = p.cents; i.dueDay = d.day;
+        if (!i.month || i.kind === 'budget') delete i.month;
         if (!old || old.name !== i.name) i.aliases = F.deriveAliases(i.name);
         if (i.kind === 'savings') { const g = parseOr(inp.goal || '', 0); if (!g.ok) return setErr(i.name + ', doel: ' + g.error); i.goal = g.cents; i.inGoal = !!i.inGoal; }
       }
@@ -677,16 +679,17 @@
               <div className="w-amount"><${AmountInput} id=${'set-' + i.id} value=${inputs[i.id] ? inputs[i.id].amount : ''} onChange=${(v) => setInp(i.id, 'amount', v)} /></div></div>
             <div className="set-item-bottom">
               <label className="day-field" htmlFor=${'day-' + i.id}><span className="muted small">Dag</span><input id=${'day-' + i.id} className="input day" inputMode="numeric" placeholder="?" value=${inputs[i.id] ? inputs[i.id].day : ''} onChange=${(e) => setInp(i.id, 'day', e.target.value)} /></label>
-              ${i.kind === 'bill' || i.kind === 'budget' ? html`<${Seg} options=${[['bill', 'Rekening'], ['budget', 'Budget']]} value=${i.kind} onChange=${(v) => setItem(i.id, { kind: v })} />` : html`<span className="grow"></span>`}
+              ${i.kind === 'bill' || i.kind === 'budget' ? html`<${Seg} options=${[['bill', 'Rekening'], ['budget', 'Budget']]} value=${i.kind} onChange=${(v) => setItem(i.id, { kind: v, ...(v === 'budget' ? { month: undefined } : {}) })} />` : html`<span className="grow"></span>`}
               <${Toggle} id=${'act-' + i.id} on=${i.active} label=${'Actief: ' + (i.name || 'post')} onChange=${(v) => setItem(i.id, { active: v })} />
-              ${i.kind === 'bill' || i.kind === 'budget' || (i.kind === 'savings' && i.id !== firstPotId) ? html`<button className="icon-btn" aria-label=${'Verwijder ' + i.name} onClick=${() => setS((o) => ({ ...o, items: o.items.filter((x) => x.id !== i.id) }))}><${Icon} n="x" s=${18} /></button>` : null}
+              ${i.kind === 'bill' || i.kind === 'budget' || (i.kind === 'savings' && i.id !== firstPotId) || (i.kind === 'income' && i.id !== firstIncomeId) ? html`<button className="icon-btn" aria-label=${'Verwijder ' + i.name} onClick=${() => setS((o) => ({ ...o, items: o.items.filter((x) => x.id !== i.id) }))}><${Icon} n="x" s=${18} /></button>` : null}
             </div>
+            ${i.kind === 'income' || i.kind === 'bill' ? html`<label className="freq" htmlFor=${'fq-' + i.id}><span className="muted small">Hoe vaak</span><select id=${'fq-' + i.id} className="input" value=${i.month || ''} onChange=${(e) => setItem(i.id, { month: e.target.value ? Number(e.target.value) : undefined })}><option value="">Elke maand</option>${F.MONTHS.map((m, n) => html`<option key=${n} value=${n + 1}>Eén keer per jaar, in ${m}</option>`)}</select></label>` : null}
             ${i.kind === 'savings' ? html`<div className="set-item-bottom pot-opts">
               <label className="day-field grow" htmlFor=${'pg-' + i.id}><span className="muted small">Eigen doel</span><div className="w-amount"><${AmountInput} id=${'pg-' + i.id} placeholder="geen" value=${inputs[i.id] ? inputs[i.id].goal || '' : ''} onChange=${(v) => setInp(i.id, 'goal', v)} /></div></label>
               <span className="muted small">Telt mee voor spaardoel</span><${Toggle} id=${'ig-' + i.id} on=${!!i.inGoal} label=${'Telt mee voor spaardoel: ' + (i.name || 'potje')} onChange=${(v) => setItem(i.id, { inGoal: v })} />
             </div>` : null}</div>`)}
-          ${k === 'bill' ? html`<button className="link small" onClick=${() => addItem('bill')}>+ Vaste rekening</button>` : k === 'budget' ? html`<button className="link small" onClick=${() => addItem('budget')}>+ Budget</button>` : k === 'savings' ? html`<button className="link small" onClick=${() => addItem('savings')}>+ Spaarpotje</button><p className="muted tiny">Geef elk potje een naam en een bedrag per maand. Vergeet niet op "Plan en doel opslaan" te tikken.</p>` : null}</div>`; })}
-        <div className="sum-line total"><span>Beschikbaar budget</span><span className=${cx('num', liveAvail < 0 && 'warn-text')}>${F.fmt(liveAvail)}</span></div><//>
+          ${k === 'income' ? html`<button className="link small" onClick=${() => addItem('income')}>+ Inkomen</button><p className="muted tiny">Bijvoorbeeld Eindejaarsuitkering (november) of Vakantiegeld (mei): kies bij "Hoe vaak" de maand.</p>` : k === 'bill' ? html`<button className="link small" onClick=${() => addItem('bill')}>+ Vaste rekening</button>` : k === 'budget' ? html`<button className="link small" onClick=${() => addItem('budget')}>+ Budget</button>` : k === 'savings' ? html`<button className="link small" onClick=${() => addItem('savings')}>+ Spaarpotje</button><p className="muted tiny">Geef elk potje een naam en een bedrag per maand. Vergeet niet op "Plan en doel opslaan" te tikken.</p>` : null}</div>`; })}
+        <div className="sum-line total"><span>Beschikbaar budget <span className="muted small">in een gewone maand</span></span><span className=${cx('num', liveAvail < 0 && 'warn-text')}>${F.fmt(liveAvail)}</span></div><//>
       <${Card}><${Label}>Spaardoel<//>
         <div className="grid2"><${Field} id="g-t" label="Doel"><${AmountInput} id="g-t" value=${goal.target} onChange=${(v) => setGoal((g) => ({ ...g, target: v }))} /><//>
         <${Field} id="g-s" label="Stretchdoel" hint="Optioneel"><${AmountInput} id="g-s" value=${goal.stretch} onChange=${(v) => setGoal((g) => ({ ...g, stretch: v }))} /><//></div>

@@ -90,7 +90,9 @@
     [/wegenbelasting|motorrijtuig/, ['wegenbelasting', 'motorrijtuigenbelasting']],
     [/autoverzekering/, ['autoverzekering']],
     [/beleg|invest/, ['beleggen', 'beleggingen', 'beleggingsrekening', 'belegd', 'investeren', 'geinvesteerd']],
-    [/vakantie|reis/, ['vakantie', 'vakantiepot', 'vakantiegeld', 'reis']],
+    [/vakantiegeld/, ['vakantiegeld']],
+    [/vakantie(?!geld)|reis/, ['vakantie', 'vakantiepot', 'reis']],
+    [/eindejaar|13e maand|dertiende/, ['eindejaarsuitkering', 'eindejaars', 'eju', '13e maand', 'dertiende maand']],
     [/buffer|nood/, ['buffer', 'noodfonds', 'noodpot']],
     [/salaris|loon/, ['salaris', 'loon']],
     [/sparen|spaar/, ['sparen', 'spaarrekening']],
@@ -142,6 +144,7 @@
       id: String(i.id || uid()), name, kind: i.kind, amount: isInt(i.amount) && i.amount >= 0 ? i.amount : 0,
       dueDay, active: i.active !== false, aliases: Array.isArray(i.aliases) && i.aliases.length ? i.aliases.map(normalize).filter(Boolean) : deriveAliases(name),
     };
+    if (isInt(i.month) && i.month >= 1 && i.month <= 12) out.month = i.month;
     if (i.kind === 'savings') { out.inGoal = i.inGoal != null ? !!i.inGoal : out.id === 'sparen'; out.goal = isInt(i.goal) && i.goal > 0 ? i.goal : 0; }
     return out;
   }
@@ -206,7 +209,8 @@
   function uid() { _uidN = (_uidN + 1) % 1e6; return Date.now().toString(36) + _uidN.toString(36) + Math.random().toString(36).slice(2, 7); }
   const snapshotItems = (settings) => settings.items.map((i) => ({ ...i, aliases: [...i.aliases] }));
   const monthItemsAll = (data, month) => (data.months[month] ? data.months[month].items : data.settings.items);
-  const monthItems = (data, month) => monthItemsAll(data, month).filter((i) => i.active && i.amount > 0);
+  const inMonth = (i, month) => !i.month || i.month === Number(month.slice(5));
+  const monthItems = (data, month) => monthItemsAll(data, month).filter((i) => i.active && i.amount > 0 && inMonth(i, month));
   function ensureMonth(data, month) {
     if (data.months[month]) return data;
     return { ...data, months: { ...data.months, [month]: { month, createdAt: new Date().toISOString(), items: snapshotItems(data.settings), closedBudgets: [] } } };
@@ -374,6 +378,7 @@
     const item = monthItemsAll(data, month).find((i) => i.id === itemId);
     if (!item) return { error: 'Deze post staat niet in het plan van deze maand.' };
     if (item.kind === 'budget') return { error: 'Een budget vink je niet af. Boek er uitgaven op.' };
+    if (!inMonth(item, month)) return { error: item.name + ' valt alleen in ' + MONTHS[item.month - 1] + '.' };
     const type = KIND_TX[item.kind];
     if (hasLinked(data, month, itemId, type)) return { error: item.name + ' is deze maand al afgevinkt.' };
     const amount = opts.amount != null ? opts.amount : item.amount;
@@ -551,7 +556,7 @@
     }
     if (/reserve|onderhoud/.test(t)) return { kind: 'answer', title: rs.name, lines: ['In je ' + rs.name.toLowerCase() + ' zit ' + fmt(rs.balance) + '.', 'Ingelegd ' + fmt(rs.deposits) + ', uitgegeven aan onderhoud ' + fmt(rs.expenses) + '.'] };
     if (/salaris|\bloon\b|inkomen/.test(t)) {
-      const r = S.rows.find((x) => x.kind === 'income');
+      const r = S.rows.find((x) => x.kind === 'income' && !x.item.month) || S.rows.find((x) => x.kind === 'income');
       if (!r) return { kind: 'answer', title: 'Salaris', lines: ['Er staat nog geen inkomen in je plan. Vul het in bij Instellingen.'] };
       if (r.done) return { kind: 'answer', title: 'Salaris', lines: ['Je ' + r.item.name.toLowerCase() + ' van ' + fmt(r.tx.amount) + ' is ontvangen op ' + fmtDay(r.tx.date) + '.'] };
       return { kind: 'answer', title: 'Salaris', lines: [r.item.dueDay ? 'Je ' + r.item.name.toLowerCase() + ' van ' + fmt(r.item.amount) + ' wordt verwacht op de ' + r.item.dueDay + 'e.' : 'Je ' + r.item.name.toLowerCase() + ' van ' + fmt(r.item.amount) + ' is nog niet afgevinkt. De salarisdag is nog onbekend.', 'Zeg "Salaris is binnen" zodra het er is.'] };
@@ -581,8 +586,13 @@
       if (row && !row.done) return P({ op: 'check', itemId: row.item.id, month, title: row.item.name + ' afvinken', explain: 'Ik vink ' + row.item.name + ' af voor ' + monthLabel(month) + '.', amount: amount != null ? amount : row.item.amount });
       return P({ op: 'add', ...extra });
     };
+    const incNamed = bestMatch(S.rows.filter((r) => r.kind === 'income').map((r) => r.item), t);
+    if (incNamed) {
+      const r = S.rows.find((x) => x.item.id === incNamed.id);
+      return checkOrExtra(r, { txType: 'income', category: 'Extra inkomen', note: incNamed.name, title: 'Extra inkomen', explain: incNamed.name + ' van ' + monthLabel(month, false) + ' is al afgevinkt. Ik boek dit als extra inkomen.' });
+    }
     if (/\b(salaris|loon)\b/.test(t)) {
-      const r = rowOfKind('income');
+      const r = S.rows.find((x) => x.kind === 'income' && !x.item.month) || rowOfKind('income');
       return checkOrExtra(r, { txType: 'income', category: 'Extra inkomen', note: 'Salaris', title: 'Extra inkomen', explain: r ? 'Je salaris van ' + monthLabel(month, false) + ' is al afgevinkt. Ik boek dit als extra inkomen.' : 'Ik boek dit als inkomen.' });
     }
     const pots = potItems(data).filter((p) => p.active);
@@ -641,7 +651,7 @@
     const cur = monthOf(today), day = Number(today.slice(8)), dim = daysInMonth(cur);
     const S = monthSummary(data, cur, today), out = [];
     const isDay = (dd) => dd != null && day === Math.min(dd, dim);
-    const inc = S.rows.find((x) => x.kind === 'income');
+    const inc = S.rows.find((x) => x.kind === 'income' && !x.item.month) || S.rows.find((x) => x.kind === 'income');
     if (r.salary && r.salary.enabled && inc && !inc.done && isDay(inc.item.dueDay)) out.push({ key: 'salary:' + today, title: 'Salarisdag', text: 'Is je salaris binnen? Vink het af, dan klopt je overzicht.' });
     const sav = S.rows.find((x) => x.kind === 'savings');
     const savDay = r.savings && r.savings.day != null ? r.savings.day : sav && sav.item.dueDay;
@@ -668,13 +678,14 @@
     const dt = (date, time) => date.replace(/-/g, '') + 'T' + (time || '09:00').replace(':', '') + '00';
     const add = (uidKey, title, desc, date, time, rrule, alarm) => events.push(['BEGIN:VEVENT', 'UID:' + uidKey + '@finance-sophie', 'DTSTAMP:' + stamp, 'DTSTART:' + dt(date, time), 'DURATION:PT15M', 'RRULE:' + rrule, 'SUMMARY:' + icsEscape(title), 'DESCRIPTION:' + icsEscape(desc), 'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape(title), 'TRIGGER:' + (alarm || 'PT0M'), 'END:VALARM', 'END:VEVENT'].join('\r\n'));
     const monthly = (day) => 'FREQ=MONTHLY;BYMONTHDAY=' + (day >= 31 ? -1 : day);
-    const inc = items.find((i) => i.kind === 'income'), sav = items.find((i) => i.kind === 'savings');
+    const inc = items.find((i) => i.kind === 'income' && !i.month) || items.find((i) => i.kind === 'income'), sav = items.find((i) => i.kind === 'savings' && !i.month);
     if (r.salary.enabled) { if (inc && inc.dueDay) add('salary', 'Salarisdag', 'Salaris binnen? Vink het af in Finance.', nextMonthly(inc.dueDay), r.salary.time, monthly(inc.dueDay)); else skipped.push('Salarisdag (salarisdag onbekend)'); }
     if (r.savings.enabled) { const d = r.savings.day != null ? r.savings.day : sav && sav.dueDay; if (d) add('savings', 'Spaaroverboeking', 'Tijd om te sparen.', nextMonthly(d), r.savings.time, monthly(d)); else skipped.push('Spaaroverboeking (dag onbekend)'); }
     if (r.billDue.enabled) {
       for (const b of items.filter((i) => i.kind === 'bill')) {
         if (!b.dueDay) { skipped.push(b.name + ' (vervaldag onbekend)'); continue; }
         const n = r.billDue.daysBefore || 0;
+        if (b.month) { let y = Number(today.slice(0, 4)); let d = dateInMonth(y + '-' + pad(b.month), b.dueDay); if (dayDiff(today, d) < 0) d = dateInMonth((y + 1) + '-' + pad(b.month), b.dueDay); add('bill-' + b.id, b.name + ' vervalt', b.name + ' vervalt op ' + b.dueDay + ' ' + MONTHS[b.month - 1] + '.', d, r.billDue.time, 'FREQ=YEARLY;BYMONTH=' + b.month + ';BYMONTHDAY=' + Math.min(b.dueDay, 28 < b.dueDay && b.month === 2 ? 28 : b.dueDay), n > 0 ? '-P' + n + 'D' : 'PT0M'); continue; }
         add('bill-' + b.id, b.name + ' vervalt', b.name + ' vervalt op de ' + b.dueDay + 'e.', nextMonthly(b.dueDay), r.billDue.time, monthly(b.dueDay), n > 0 ? '-P' + n + 'D' : 'PT0M');
       }
     }
@@ -703,7 +714,7 @@
     MONTHS, MON_SHORT, pad, ymd, todayStr, monthOf, parseYmd, daysInMonth, addMonths, monthDiff, dayDiff, addDays, dateInMonth, isValidDate, fmtDay, fmtDateLong, monthLabel, monthShort, monthRange,
     fmt, fmtRound, parseAmount, validateAmount, centsToInput, MAX_CENTS, normalize, deriveAliases,
     defaultSettings, emptyData, migrate, exportBackup, importBackup, uid, alive, KIND_TX, TYPE_LABEL, TX_TYPES,
-    monthItems, monthItemsAll, ensureMonth, monthSummary, savingsStats, potStats, potIdOf, reserveStats, upcoming, dueLabel,
+    monthItems, monthItemsAll, inMonth, ensureMonth, monthSummary, savingsStats, potStats, potIdOf, reserveStats, upcoming, dueLabel,
     check, uncheck, addTx, updateTx, deleteTx, restoreTx, purgeTx, setMonthOverride, toggleBudgetClosed, applySettings,
     extractDate, extractAmount, parseMessage, guessCategory, isQuestion,
     remindersToday, buildIcs, toCsv,
