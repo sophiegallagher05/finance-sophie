@@ -89,6 +89,9 @@
     [/\bov\b|trein|\bns\b/, ['ov', 'trein', 'ns']],
     [/wegenbelasting|motorrijtuig/, ['wegenbelasting', 'motorrijtuigenbelasting']],
     [/autoverzekering/, ['autoverzekering']],
+    [/beleg|invest/, ['beleggen', 'beleggingen', 'beleggingsrekening', 'belegd', 'investeren', 'geinvesteerd']],
+    [/vakantie|reis/, ['vakantie', 'vakantiepot', 'vakantiegeld', 'reis']],
+    [/buffer|nood/, ['buffer', 'noodfonds', 'noodpot']],
     [/salaris|loon/, ['salaris', 'loon']],
     [/sparen|spaar/, ['sparen', 'spaarrekening']],
     [/reserve/, ['reserve', 'autoreserve']],
@@ -116,7 +119,7 @@
       version: 1, startMonth: monthOf(today),
       items: [
         { id: 'salaris', name: 'Salaris', kind: 'income', amount: 0, dueDay: null, active: true, aliases: ['salaris', 'loon'] },
-        { id: 'sparen', name: 'Spaaroverboeking', kind: 'savings', amount: 0, dueDay: null, active: true, aliases: ['spaaroverboeking', 'sparen', 'spaarrekening'] },
+        { id: 'sparen', name: 'Spaaroverboeking', kind: 'savings', amount: 0, dueDay: null, active: true, inGoal: true, goal: 0, aliases: ['spaaroverboeking', 'sparen', 'spaarrekening'] },
         { id: 'autoreserve', name: 'Autoreserve', kind: 'reserve', amount: 0, dueDay: null, active: true, aliases: ['autoreserve', 'reserve'] },
       ],
       goal: { target: 0, stretch: 0, targetDate: (y + 1) + '-12-31' },
@@ -135,10 +138,12 @@
     if (!i || typeof i !== 'object' || !KINDS.includes(i.kind)) return null;
     const name = String(i.name || '').trim() || 'Naamloos';
     const dueDay = isInt(i.dueDay) && i.dueDay >= 1 && i.dueDay <= 31 ? i.dueDay : null;
-    return {
+    const out = {
       id: String(i.id || uid()), name, kind: i.kind, amount: isInt(i.amount) && i.amount >= 0 ? i.amount : 0,
       dueDay, active: i.active !== false, aliases: Array.isArray(i.aliases) && i.aliases.length ? i.aliases.map(normalize).filter(Boolean) : deriveAliases(name),
     };
+    if (i.kind === 'savings') { out.inGoal = i.inGoal != null ? !!i.inGoal : out.id === 'sparen'; out.goal = isInt(i.goal) && i.goal > 0 ? i.goal : 0; }
+    return out;
   }
   function migrate(obj, today) {
     if (!obj || typeof obj !== 'object' || !obj.settings || typeof obj.settings !== 'object') return null;
@@ -176,6 +181,7 @@
         source: SOURCES.includes(t.source) ? t.source : 'import', createdAt: t.createdAt || new Date().toISOString(),
       };
       if (t.itemId) out.itemId = String(t.itemId);
+      if (t.potId) out.potId = String(t.potId);
       if (t.updatedAt) out.updatedAt = t.updatedAt;
       if (t.deletedAt) out.deletedAt = t.deletedAt;
       if (Array.isArray(t.history) && t.history.length) out.history = t.history.filter((h) => h && isInt(h.amount));
@@ -247,11 +253,37 @@
     };
   }
 
+  const SAV_TYPES = ['savings_opening', 'savings_deposit', 'savings_withdrawal'];
+  const potItems = (data) => data.settings.items.filter((i) => i.kind === 'savings');
+  function potIdOf(data, t) {
+    const pots = potItems(data);
+    const id = t.itemId || t.potId;
+    if (id && pots.some((p) => p.id === id)) return id;
+    return pots.length ? pots[0].id : null;
+  }
+  function goalPotIds(data) {
+    const pots = potItems(data);
+    const ids = pots.filter((p) => p.inGoal !== false && p.inGoal != null ? p.inGoal : false).map((p) => p.id);
+    return new Set(ids.length ? ids : pots.slice(0, 1).map((p) => p.id));
+  }
+  function potStats(data) {
+    const pots = potItems(data);
+    const t = data.transactions.filter((x) => alive(x) && SAV_TYPES.includes(x.type));
+    return pots.map((item) => {
+      const mine = t.filter((x) => potIdOf(data, x) === item.id);
+      const opening = sum(mine.filter((x) => x.type === 'savings_opening'));
+      const deposits = sum(mine.filter((x) => x.type === 'savings_deposit'));
+      const withdrawals = sum(mine.filter((x) => x.type === 'savings_withdrawal'));
+      const balance = opening + deposits - withdrawals;
+      return { item, opening, deposits, withdrawals, balance, pct: item.goal > 0 ? Math.min(100, (balance / item.goal) * 100) : null, history: mine.slice().sort((a, b) => (a.date < b.date ? 1 : -1)) };
+    });
+  }
   function savingsStats(data, today) {
     const s = data.settings, cur = monthOf(today);
     const t = data.transactions.filter(alive);
-    const SAV = ['savings_opening', 'savings_deposit', 'savings_withdrawal'];
-    const st = t.filter((x) => SAV.includes(x.type));
+    const SAV = SAV_TYPES;
+    const inGoal = goalPotIds(data);
+    const st = t.filter((x) => SAV.includes(x.type) && inGoal.has(potIdOf(data, x)));
     const opening = sum(st.filter((x) => x.type === 'savings_opening'));
     const deposits = sum(st.filter((x) => x.type === 'savings_deposit'));
     const withdrawals = sum(st.filter((x) => x.type === 'savings_withdrawal'));
@@ -292,7 +324,7 @@
       bal += inM.reduce((a, x) => a + (x.type === 'savings_withdrawal' ? -x.amount : x.amount), 0);
       return { month: m, balance: bal, net: netOf(m) };
     });
-    return { opening, deposits, withdrawals, balance, netYear, target, stretch, pct, pctStretch, targetMonth, monthsToGo, neededPerMonth, remainingToGoal, forecast, milestones, series, depositedThisMonth };
+    return { goalPots: potItems(data).filter((p) => inGoal.has(p.id)), opening, deposits, withdrawals, balance, netYear, target, stretch, pct, pctStretch, targetMonth, monthsToGo, neededPerMonth, remainingToGoal, forecast, milestones, series, depositedThisMonth };
   }
 
   function reserveStats(data) {
@@ -375,6 +407,7 @@
     const month = input.month || (isValidDate(input.date) ? monthOf(input.date) : null);
     const tx = { id: uid(), type: input.type, amount: input.amount, date: input.date, month, category: input.category || '', note: input.note || '', source: input.source || 'handmatig', createdAt: nowIso() };
     if (input.itemId) tx.itemId = input.itemId;
+    else if (input.potId && SAV_TYPES.includes(input.type)) tx.potId = input.potId;
     if (month) data = ensureMonth(data, month);
     const e = validateTxInput(data, tx); if (e) return { error: e };
     return { data: { ...data, transactions: [...data.transactions, tx] }, tx };
@@ -385,6 +418,7 @@
     const next = { ...old, ...patch };
     if (patch.date && !patch.month) next.month = old.itemId && next.itemId === old.itemId ? old.month : monthOf(patch.date);
     if (!next.itemId) delete next.itemId;
+    if (next.itemId || !next.potId || !SAV_TYPES.includes(next.type)) delete next.potId;
     data = ensureMonth(data, next.month);
     const e = validateTxInput(data, next, id); if (e) return { error: e };
     next.updatedAt = nowIso();
@@ -501,10 +535,17 @@
       S.perDay != null ? 'Dat is ongeveer ' + fmt(S.perDay) + ' per dag voor de resterende ' + S.daysLeft + (S.daysLeft === 1 ? ' dag.' : ' dagen.') : null,
       'Beschikbaar budget: ' + fmt(S.planned.available) + '. Vrije uitgaven tot nu toe: ' + fmt(S.freeSpend) + (S.overrun ? '. Overschrijdingen: ' + fmt(S.overrun) + '.' : '.'),
     ].filter(Boolean);
+    const potQ = bestMatch(potItems(data), t);
+    if (potQ && !/spaardoel|\bdoel\b/.test(t)) {
+      const p = potStats(data).find((x) => x.item.id === potQ.id);
+      return { kind: 'answer', title: potQ.name, lines: ['In ' + potQ.name + ' zit ' + fmt(p.balance) + '.', 'Je zet er ' + fmt(potQ.amount) + ' per maand in.', ...(potQ.goal ? ['Dat is ' + Math.floor(p.pct) + '% van je doel van ' + fmt(potQ.goal) + '.'] : [])] };
+    }
     if (/spaar|spaardoel|gespaard|\bdoel\b|sparen/.test(t)) {
       const l = ['Je spaarsaldo is ' + fmt(sv.balance) + '.'];
       if (sv.target > 0) l.push('Dat is ' + Math.floor(sv.pct) + '% van je doel van ' + fmt(sv.target) + ' vóór ' + fmtDateLong(data.settings.goal.targetDate) + '.');
       if (sv.neededPerMonth != null) l.push('Je hebt nog ongeveer ' + fmt(sv.neededPerMonth) + ' per maand nodig.');
+      const ps = potStats(data);
+      if (ps.length > 1) l.push('Per potje: ' + ps.map((p) => p.item.name + ' ' + fmt(p.balance)).join(', ') + '.');
       l.push(sv.forecast ? 'Als je zo doorgaat, heb je rond de streefdatum ongeveer ' + fmt(sv.forecast.amount) + '.' : 'Nog geen voorspelling: daarvoor heb ik minstens één afgesloten maand nodig.');
       return { kind: 'answer', title: 'Spaardoel', lines: l };
     }
@@ -544,15 +585,22 @@
       const r = rowOfKind('income');
       return checkOrExtra(r, { txType: 'income', category: 'Extra inkomen', note: 'Salaris', title: 'Extra inkomen', explain: r ? 'Je salaris van ' + monthLabel(month, false) + ' is al afgevinkt. Ik boek dit als extra inkomen.' : 'Ik boek dit als inkomen.' });
     }
-    if (/spaar/.test(t) && /(opgenomen|opname|opnemen|gehaald|halen|haal|afgehaald|teruggezet|terug gezet)/.test(t))
-      return P({ op: 'add', txType: 'savings_withdrawal', category: 'Spaarrekening', title: 'Opname van spaarrekening', explain: 'Ik boek een opname van je spaarrekening. Je spaarsaldo gaat omlaag.' });
+    const pots = potItems(data).filter((p) => p.active);
+    const pot = bestMatch(pots, t);
+    const WITHDRAW = /(opgenomen|opname|opnemen|gehaald|halen|haal|afgehaald|teruggezet|terug gezet|verkocht)/;
+    if ((/spaar/.test(t) || pot) && WITHDRAW.test(t)) {
+      const pp = pot || pots[0];
+      return P({ op: 'add', txType: 'savings_withdrawal', potId: pp ? pp.id : undefined, category: pp ? pp.name : 'Spaarrekening', title: 'Opname uit ' + (pp ? pp.name : 'spaarrekening'), explain: 'Ik boek een opname uit ' + (pp ? pp.name : 'je spaarrekening') + '. Dat saldo gaat omlaag.' });
+    }
     if (/reserve/.test(t) && DEPOSIT.test(t)) {
       const r = rowOfKind('reserve');
       return checkOrExtra(r, { txType: 'reserve_deposit', category: 'Autoreserve', title: 'Storting reservepotje', explain: r ? 'De vaste inleg van deze maand is al afgevinkt. Ik boek dit als extra storting.' : 'Ik boek een storting in je reservepotje.' });
     }
-    if ((/spaar/.test(t) && DEPOSIT.test(t)) || /\bgespaard\b/.test(t)) {
-      const r = rowOfKind('savings');
-      return checkOrExtra(r, { txType: 'savings_deposit', category: 'Spaarrekening', title: 'Spaarstorting', explain: r ? 'De spaaroverboeking van deze maand is al afgevinkt. Ik boek dit als extra storting.' : 'Ik boek een storting op je spaarrekening.' });
+    if ((/spaar/.test(t) && DEPOSIT.test(t)) || /\bgespaard\b/.test(t) || (pot && (DEPOSIT.test(t) || /(belegd|geinvesteerd|apart)/.test(t)))) {
+      const pp = pot || pots[0];
+      const r = pp ? S.rows.find((x) => x.item.id === pp.id) : rowOfKind('savings');
+      const name = pp ? pp.name : 'je spaarrekening';
+      return checkOrExtra(r, { txType: 'savings_deposit', potId: pp ? pp.id : undefined, category: pp ? pp.name : 'Spaarrekening', title: 'Storting ' + name, explain: r ? name + ' is deze maand al afgevinkt. Ik boek dit als extra storting.' : 'Ik boek een storting op ' + name + '.' });
     }
     const budget = bestMatch(S.rows.filter((r) => r.kind === 'budget').map((r) => r.item), t);
     if (budget) {
@@ -642,11 +690,11 @@
   const csvCell = (v) => { const s = String(v == null ? '' : v); return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const csvAmount = (c) => (c / 100).toFixed(2).replace('.', ',');
   function toCsv(data) {
-    const nameOf = (t) => { const it = monthItemsAll(data, t.month).find((i) => i.id === t.itemId); return it ? it.name : ''; };
+    const nameOf = (t) => { const id = t.itemId || t.potId; const it = monthItemsAll(data, t.month).find((i) => i.id === id) || data.settings.items.find((i) => i.id === id); return it ? it.name : ''; };
     const rows = [['Datum', 'Boekmaand', 'Soort', 'Bedrag', 'Categorie', 'Omschrijving', 'Hoort bij', 'Bron']];
     for (const t of data.transactions.filter(alive).slice().sort((a, b) => (a.date < b.date ? -1 : 1))) {
       const sign = ['expense', 'savings_deposit', 'reserve_deposit', 'reserve_expense'].includes(t.type) ? -1 : 1;
-      rows.push([t.date, t.month, TYPE_LABEL[t.type], csvAmount(sign * t.amount), t.category, t.note, t.itemId ? nameOf(t) : '', t.source]);
+      rows.push([t.date, t.month, TYPE_LABEL[t.type], csvAmount(sign * t.amount), t.category, t.note, t.itemId || t.potId ? nameOf(t) : '', t.source]);
     }
     return '\uFEFF' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n') + '\r\n';
   }
@@ -655,7 +703,7 @@
     MONTHS, MON_SHORT, pad, ymd, todayStr, monthOf, parseYmd, daysInMonth, addMonths, monthDiff, dayDiff, addDays, dateInMonth, isValidDate, fmtDay, fmtDateLong, monthLabel, monthShort, monthRange,
     fmt, fmtRound, parseAmount, validateAmount, centsToInput, MAX_CENTS, normalize, deriveAliases,
     defaultSettings, emptyData, migrate, exportBackup, importBackup, uid, alive, KIND_TX, TYPE_LABEL, TX_TYPES,
-    monthItems, monthItemsAll, ensureMonth, monthSummary, savingsStats, reserveStats, upcoming, dueLabel,
+    monthItems, monthItemsAll, ensureMonth, monthSummary, savingsStats, potStats, potIdOf, reserveStats, upcoming, dueLabel,
     check, uncheck, addTx, updateTx, deleteTx, restoreTx, purgeTx, setMonthOverride, toggleBudgetClosed, applySettings,
     extractDate, extractAmount, parseMessage, guessCategory, isQuestion,
     remindersToday, buildIcs, toCsv,

@@ -162,6 +162,7 @@
     const [f, setF] = useState(() => ({
       income: F.centsToInput(inc ? inc.amount : 0), salaryDay: dayStr(inc && inc.dueDay),
       rows: items.filter((i) => i.kind === 'bill' || i.kind === 'budget').map((i) => ({ key: i.id, name: i.name, amount: F.centsToInput(i.amount), kind: i.kind })).concat(items.some((i) => i.kind === 'bill' || i.kind === 'budget') ? [] : [{ key: F.uid(), name: '', amount: '', kind: 'bill' }, { key: F.uid(), name: '', amount: '', kind: 'budget' }]),
+      pots: items.filter((i) => i.kind === 'savings' && i !== sav).map((i) => ({ key: i.id, name: i.name, amount: F.centsToInput(i.amount) })),
       savings: F.centsToInput(sav ? sav.amount : 0), reserve: F.centsToInput(res ? res.amount : 0),
       target: F.centsToInput(data.settings.goal.target), stretch: F.centsToInput(data.settings.goal.stretch), targetDate: data.settings.goal.targetDate,
     }));
@@ -170,7 +171,9 @@
     const setRow = (key, patch) => setF((o) => ({ ...o, rows: o.rows.map((r) => (r.key === key ? { ...r, ...patch } : r)) }));
     const c = (s) => { const p = parseOr(s, 0); return p.ok ? p.cents : 0; };
     const fixed = f.rows.reduce((a, r) => a + c(r.amount), 0);
-    const free = c(f.income) - fixed - c(f.savings) - c(f.reserve);
+    const potsTotal = f.pots.reduce((a, r) => a + c(r.amount), 0);
+    const free = c(f.income) - fixed - c(f.savings) - potsTotal - c(f.reserve);
+    const setPot = (key, patch) => setF((o) => ({ ...o, pots: o.pots.map((r) => (r.key === key ? { ...r, ...patch } : r)) }));
     const fileRef = useRef(null);
     function save() {
       const e = {};
@@ -178,6 +181,7 @@
       const income = p('income', f.income);
       const sd = parseDay(f.salaryDay); if (!sd.ok) e.salaryDay = sd.error;
       const rows = f.rows.filter((r) => r.name.trim() || r.amount.trim()).map((r) => { const a = p('row' + r.key, r.amount); if (!r.name.trim()) e['row' + r.key] = 'Geef deze post een naam.'; return { ...r, cents: a }; });
+      const pots = f.pots.filter((r) => r.name.trim() || r.amount.trim()).map((r) => { const a = p('pot' + r.key, r.amount); if (!r.name.trim()) e['pot' + r.key] = 'Geef dit potje een naam.'; return { ...r, cents: a }; });
       const savings = p('savings', f.savings), reserve = p('reserve', f.reserve), target = p('target', f.target), stretch = p('stretch', f.stretch);
       if (stretch > 0 && stretch <= target) e.stretch = 'Het stretchdoel moet hoger zijn dan je doel.';
       if (!F.isValidDate(f.targetDate)) e.targetDate = 'Kies een geldige datum.';
@@ -188,7 +192,8 @@
       s.items = [
         keep(inc ? inc.id : 'salaris', 'income', 'Salaris', income, sd.day),
         ...rows.map((r) => { const old = data.settings.items.find((i) => i.id === r.key); return { id: r.key, name: r.name.trim(), kind: r.kind, amount: r.cents, dueDay: old ? old.dueDay : null, active: true, aliases: old && old.name === r.name.trim() ? old.aliases : F.deriveAliases(r.name) }; }),
-        keep(sav ? sav.id : 'sparen', 'savings', 'Spaaroverboeking', savings),
+        { ...keep(sav ? sav.id : 'sparen', 'savings', 'Spaaroverboeking', savings), inGoal: sav ? sav.inGoal !== false : true, goal: sav ? sav.goal || 0 : 0 },
+        ...pots.map((r) => { const old = data.settings.items.find((i) => i.id === r.key); return { id: r.key, name: r.name.trim(), kind: 'savings', amount: r.cents, dueDay: old ? old.dueDay : null, active: true, inGoal: old ? !!old.inGoal : false, goal: old ? old.goal || 0 : 0, aliases: old && old.name === r.name.trim() ? old.aliases : F.deriveAliases(r.name) }; }),
         keep(res ? res.id : 'autoreserve', 'reserve', 'Autoreserve', reserve),
       ];
       s.goal = { target, stretch, targetDate: f.targetDate };
@@ -221,7 +226,13 @@
         <div className="grid2">
           <${Field} id="s-sav" label="Naar spaarrekening" error=${errors.savings}><${AmountInput} id="s-sav" value=${f.savings} onChange=${(v) => set('savings', v)} /><//>
           <${Field} id="s-res" label="Naar autoreserve" hint="0 = niet gebruiken" error=${errors.reserve}><${AmountInput} id="s-res" value=${f.reserve} onChange=${(v) => set('reserve', v)} /><//>
-        </div><//>
+        </div>
+        ${f.pots.length ? html`<div className="rows">${f.pots.map((r) => html`<div className="setup-row" key=${r.key}><div className="setup-row-top">
+          <input className="input grow" aria-label="Naam potje" placeholder="Naam, bijv. Vakantie" value=${r.name} onChange=${(e) => setPot(r.key, { name: e.target.value })} />
+          <div className="w-amount"><${AmountInput} id=${'pot-' + r.key} value=${r.amount} onChange=${(v) => setPot(r.key, { amount: v })} /></div>
+          <button className="icon-btn" aria-label="Potje verwijderen" onClick=${() => setF((o) => ({ ...o, pots: o.pots.filter((x) => x.key !== r.key) }))}><${Icon} n="x" s=${18} /></button></div>
+          ${errors['pot' + r.key] ? html`<span className="field-error">${errors['pot' + r.key]}</span>` : null}</div>`)}</div>` : null}
+        <button className="btn ghost" onClick=${() => setF((o) => ({ ...o, pots: [...o.pots, { key: F.uid(), name: '', amount: '' }] }))}>+ Spaarpotje</button><//>
       <${Card}><${Label}>Spaardoel<//>
         <div className="grid2">
           <${Field} id="s-target" label="Doel" error=${errors.target}><${AmountInput} id="s-target" value=${f.target} onChange=${(v) => set('target', v)} /><//>
@@ -231,7 +242,7 @@
       <${Card} className="summary">
         <div className="sum-line"><span>Inkomen</span><${M} c=${c(f.income)} /></div>
         <div className="sum-line"><span>Vaste lasten en budgetten</span><span className="num">− ${F.fmt(fixed)}</span></div>
-        <div className="sum-line"><span>Sparen en reserveren</span><span className="num">− ${F.fmt(c(f.savings) + c(f.reserve))}</span></div>
+        <div className="sum-line"><span>Sparen en reserveren</span><span className="num">− ${F.fmt(c(f.savings) + potsTotal + c(f.reserve))}</span></div>
         <div className="sum-line total"><span>Vrij te besteden per maand</span><span className=${cx('num', free < 0 && 'warn-text')}>${F.fmt(free)}</span></div><//>
       <button className="btn primary big" onClick=${save}>Plan opslaan en beginnen</button>
       <button className="link" onClick=${() => fileRef.current && fileRef.current.click()}>Ik heb een back-up: terugzetten</button>
@@ -411,13 +422,15 @@
     const [note, setNote] = useState(init.note || '');
     const [cat, setCat] = useState(init.category || '');
     const [itemId, setItemId] = useState(init.itemId || '');
+    const [potId, setPotId] = useState(init.potId || '');
+    const potList = data.settings.items.filter((i) => i.kind === 'savings');
     const [err, setErr] = useState(null);
     const [confirm, setConfirm] = useState(false);
     const month = t && t.itemId && itemId === t.itemId ? t.month : preset && preset.month && itemId ? preset.month : F.isValidDate(date) ? F.monthOf(date) : F.monthOf(today);
     const linkable = F.monthItemsAll(data, month).filter((i) => i.active && F.KIND_TX[i.kind] === type);
     const save = () => {
       const p = F.parseAmount(amt); if (!p.ok) return setErr(p.error);
-      const input = { type, amount: p.cents, date, note: note.trim(), category: cat.trim() || (itemId ? (linkable.find((i) => i.id === itemId) || {}).name || '' : ''), itemId: itemId && linkable.some((i) => i.id === itemId) ? itemId : undefined, month: itemId ? month : undefined };
+      const input = { type, amount: p.cents, date, note: note.trim(), category: cat.trim() || (itemId ? (linkable.find((i) => i.id === itemId) || {}).name || '' : ''), itemId: itemId && linkable.some((i) => i.id === itemId) ? itemId : undefined, potId: !itemId && type.startsWith('savings') && potId ? potId : undefined, month: itemId ? month : undefined };
       const ok = t ? commit((d) => F.updateTx(d, t.id, input), 'Boeking aangepast') : commit((d) => F.addTx(d, { ...input, source: 'handmatig' }), 'Boeking opgeslagen');
       if (ok) close();
     };
@@ -431,6 +444,7 @@
       <${Field} id="tx-date" label="Datum"><input id="tx-date" type="date" className="input" value=${date} onChange=${(e) => setDate(e.target.value)} /><//></div>
       <${Field} id="tx-note" label="Omschrijving"><input id="tx-note" className="input" value=${note} placeholder="bijv. Tanken" onChange=${(e) => setNote(e.target.value)} /><//>
       ${linkable.length ? html`<${Field} id="tx-item" label="Hoort bij" hint=${'Posten van ' + F.monthLabel(month)}><select id="tx-item" className="input" value=${itemId} onChange=${(e) => setItemId(e.target.value)}><option value="">Niets (losse boeking)</option>${linkable.map((i) => html`<option key=${i.id} value=${i.id}>${i.name}</option>`)}</select><//>` : null}
+      ${!itemId && type.startsWith('savings') && potList.length > 1 ? html`<${Field} id="tx-pot" label="Potje"><select id="tx-pot" className="input" value=${potId || potList[0].id} onChange=${(e) => setPotId(e.target.value)}>${potList.map((i) => html`<option key=${i.id} value=${i.id}>${i.name}</option>`)}</select><//>` : null}
       ${!itemId ? html`<${Field} id="tx-cat" label="Categorie"><input id="tx-cat" className="input" list="cats" value=${cat} placeholder="bijv. Boodschappen" onChange=${(e) => setCat(e.target.value)} /><datalist id="cats">${['Boodschappen', 'Uit eten', 'Kleding', 'Cadeaus', 'Sport', 'Vervoer', 'Uitgaan', 'Overig'].map((c) => html`<option key=${c} value=${c} />`)}</datalist><//>` : null}
       ${err ? html`<p className="field-error">${err}</p>` : null}
       <div className="btn-row"><button className="btn primary" onClick=${save}>Opslaan</button>
@@ -441,12 +455,13 @@
   }
 
   /* ---------- sparen ---------- */
-  function SavingsPage({ data, today, commit, openTx }) {
+  function SavingsPage({ data, today, commit, openTx, openPot }) {
     const [view, setView] = useState('doel');
     const sv = useMemo(() => F.savingsStats(data, today), [data, today]);
     const rs = useMemo(() => F.reserveStats(data), [data]);
     const cur = F.monthOf(today);
     const savItem = data.settings.items.find((i) => i.kind === 'savings');
+    const pots = useMemo(() => F.potStats(data), [data]);
     const resItem = data.settings.items.find((i) => i.kind === 'reserve');
     return html`<main className="page">
       <div className="title-row"><h1>Sparen</h1><${Seg} options=${[['doel', 'Spaardoel'], ['reserve', resItem ? resItem.name : 'Autoreserve']]} value=${view} onChange=${setView} /></div>
@@ -466,12 +481,19 @@
             <div><span className="muted small">Voorspelling</span><b className="num">${sv.forecast ? F.fmt(sv.forecast.amount) : 'Nog geen voorspelling'}</b></div>
           </div>
           ${sv.forecast ? html`<p className="muted small">Op basis van gemiddeld ${F.fmt(sv.forecast.avg)} per maand over ${sv.forecast.months} afgesloten ${sv.forecast.months === 1 ? 'maand' : 'maanden'}.${sv.target ? (sv.forecast.amount >= sv.target ? ' Daarmee haal je je doel.' : ' Daarmee kom je ' + F.fmt(sv.target - sv.forecast.amount) + ' tekort.') : ''}</p>` : null}<//>
+        <${Card}><${Label} right=${html`<span className="muted small num">${F.fmt(pots.reduce((a, p) => a + p.balance, 0))} totaal</span>`}>Spaarpotjes<//>
+          <ul className="list">${pots.map((p) => html`<li key=${p.item.id}><button className="list-btn pot-row" onClick=${() => openPot(p.item.id)}>
+            <span className="grow"><span className="li-title">${p.item.name}${p.item.active ? '' : ' (uit)'}</span><span className="muted small">${F.fmt(p.item.amount)} per maand${p.item.inGoal ? ' · telt mee voor spaardoel' : ''}</span>
+              ${p.item.goal ? html`<span className="pot-goal"><${Bar} thin value=${p.balance / p.item.goal} /><span className="muted tiny num">${Math.floor(p.pct)}% van ${F.fmtRound(p.item.goal)}</span></span>` : null}</span>
+            <${M} c=${p.balance} className="li-amount" /></button></li>`)}</ul>
+          <p className="muted tiny">Een potje toevoegen of hernoemen doe je in Instellingen → Spaarpotjes.</p><//>
+        ${sv.goalPots.length ? html`<p className="muted small pad-x">Het spaardoel hierboven telt: ${sv.goalPots.map((p) => p.name).join(', ')}.</p>` : null}
         <${Card}><${Label}>Saldoverloop<//><${AreaChart} series=${sv.series} goal=${sv.target} /><//>
         <${Card}><${Label}>Prestatie per maand<//><${Columns} items=${sv.series.slice(-8).map((s) => ({ label: F.MON_SHORT[Number(s.month.slice(5)) - 1], value: s.net, current: s.month === cur }))} /><//>
         <${Card}><${Label}>Mijlpalen<//><ul className="list">${sv.milestones.map((m) => html`<li key=${m.amount} className="check-row static">
           <span className=${cx('circle small', m.reached && 'done')}>${m.reached ? html`<${Icon} n="check" s=${12} />` : null}</span>
           <span className="li-title grow num">${F.fmtRound(m.amount)}</span><span className="muted small">${m.reached ? F.fmtDay(m.date) + ' ' + m.date.slice(0, 4) : 'nog ' + F.fmt(Math.max(0, m.amount - sv.balance))}</span></li>`)}</ul><//>
-        <${AmountEditor} title="Maandelijkse inleg" hint="Geldt vanaf deze maand" value=${savItem ? savItem.amount : 0} onSave=${(c) => commit((d) => { const s = JSON.parse(JSON.stringify(d.settings)); const it = s.items.find((i) => i.kind === 'savings'); if (!it) return { error: 'Geen spaarpost gevonden.' }; it.amount = c; return F.applySettings(d, s, cur); }, 'Maandelijkse inleg aangepast')} />
+        <${AmountEditor} title=${'Maandelijkse inleg ' + (savItem ? savItem.name : '')} hint="Geldt vanaf deze maand" value=${savItem ? savItem.amount : 0} onSave=${(c) => commit((d) => { const s = JSON.parse(JSON.stringify(d.settings)); const it = s.items.find((i) => i.kind === 'savings'); if (!it) return { error: 'Geen spaarpost gevonden.' }; it.amount = c; return F.applySettings(d, s, cur); }, 'Maandelijkse inleg aangepast')} />
         <${OpeningEditor} data=${data} type="savings_opening" title="Beginsaldo spaarrekening" commit=${commit} today=${today} />
       ` : html`
         <${Card}><span className="label">Saldo ${rs.name.toLowerCase()}</span>
@@ -512,13 +534,29 @@
       ${err ? html`<p className="field-error">${err}</p>` : null}<button className="btn ghost" onClick=${save}>Beginsaldo opslaan</button><//>`;
   }
 
+  function PotSheet({ data, today, potId, openTx }) {
+    const p = F.potStats(data).find((x) => x.item.id === potId);
+    if (!p) return html`<p className="muted">Dit potje bestaat niet meer.</p>`;
+    const LBL = { savings_deposit: 'Storting', savings_withdrawal: 'Opname', savings_opening: 'Beginsaldo' };
+    return html`<div className="stack">
+      <div><div className="mid-num num">${F.fmt(p.balance)}</div><p className="muted small">${F.fmt(p.item.amount)} per maand · gestort ${F.fmt(p.deposits)} · opgenomen ${F.fmt(p.withdrawals)}</p></div>
+      ${p.item.goal ? html`<${Bar} value=${p.balance / p.item.goal} /><p className="muted small">${Math.floor(p.pct)}% van je doel van ${F.fmt(p.item.goal)}</p>` : null}
+      <div className="btn-row">
+        <button className="btn primary" onClick=${() => openTx(null, { type: 'savings_deposit', potId, date: today, category: p.item.name })}>+ Storting</button>
+        <button className="btn ghost" onClick=${() => openTx(null, { type: 'savings_withdrawal', potId, date: today, category: p.item.name })}>Opname</button>
+        <button className="btn ghost" onClick=${() => openTx(null, { type: 'savings_opening', potId, date: data.settings.startMonth + '-01', category: 'Beginsaldo', note: 'Beginsaldo' })}>Beginsaldo</button></div>
+      <p className="muted tiny">De vaste inleg van elke maand vink je af in Maand.</p>
+      ${p.history.length ? html`<ul className="list">${p.history.map((t) => html`<li key=${t.id}><button className="list-btn" onClick=${() => openTx(t.id)}><span><span className="li-title">${t.note || LBL[t.type]}</span><span className="muted small">${LBL[t.type]} · ${F.fmtDay(t.date)} ${t.date.slice(0, 4)}</span></span><span className="num">${t.type === 'savings_withdrawal' ? '− ' : '+ '}${F.fmt(t.amount)}</span></button></li>`)}</ul>` : html`<p className="muted small">Nog niets in dit potje.</p>`}
+    </div>`;
+  }
+
   /* ---------- transacties ---------- */
   function TxPage({ data, today, openTx }) {
     const [view, setView] = useState('lijst');
     const [q, setQ] = useState('');
     const [filter, setFilter] = useState('alles');
     const [am, setAm] = useState(F.monthOf(today));
-    const nameOf = (t) => { const i = F.monthItemsAll(data, t.month).find((x) => x.id === t.itemId); return i ? i.name : ''; };
+    const nameOf = (t) => { const id = t.itemId || t.potId; const i = F.monthItemsAll(data, t.month).find((x) => x.id === id) || data.settings.items.find((x) => x.id === id); return i ? i.name : ''; };
     const FILTERS = [['alles', 'Alles'], ['uitgaven', 'Uitgaven'], ['inkomen', 'Inkomen'], ['sparen', 'Sparen'], ['reserve', 'Reserve'], ['prullenbak', 'Prullenbak']];
     const match = (t) => {
       if (filter === 'prullenbak') { if (!t.deletedAt) return false; } else if (t.deletedAt) return false;
@@ -572,20 +610,22 @@
   function SettingsPage({ data, today, commit, toast, mode, replaceData }) {
     const cur = F.monthOf(today);
     const [s, setS] = useState(() => JSON.parse(JSON.stringify(data.settings)));
-    const [inputs, setInputs] = useState(() => Object.fromEntries(data.settings.items.map((i) => [i.id, { amount: F.centsToInput(i.amount), day: dayStr(i.dueDay) }])));
+    const [inputs, setInputs] = useState(() => Object.fromEntries(data.settings.items.map((i) => [i.id, { amount: F.centsToInput(i.amount), day: dayStr(i.dueDay), goal: F.centsToInput(i.goal || 0) }])));
     const [goal, setGoal] = useState(() => ({ target: F.centsToInput(data.settings.goal.target), stretch: F.centsToInput(data.settings.goal.stretch), date: data.settings.goal.targetDate }));
     const [fromNow, setFromNow] = useState(true);
     const [err, setErr] = useState(null);
     const [backups, setBackups] = useState(null);
     const [pending, setPending] = useState(null);
     const fileRef = useRef(null);
-    useEffect(() => { setS(JSON.parse(JSON.stringify(data.settings))); setInputs(Object.fromEntries(data.settings.items.map((i) => [i.id, { amount: F.centsToInput(i.amount), day: dayStr(i.dueDay) }]))); setGoal({ target: F.centsToInput(data.settings.goal.target), stretch: F.centsToInput(data.settings.goal.stretch), date: data.settings.goal.targetDate }); }, [data.settings.updatedAt]);
+    useEffect(() => { setS(JSON.parse(JSON.stringify(data.settings))); setInputs(Object.fromEntries(data.settings.items.map((i) => [i.id, { amount: F.centsToInput(i.amount), day: dayStr(i.dueDay), goal: F.centsToInput(i.goal || 0) }]))); setGoal({ target: F.centsToInput(data.settings.goal.target), stretch: F.centsToInput(data.settings.goal.stretch), date: data.settings.goal.targetDate }); }, [data.settings.updatedAt]);
     useEffect(() => { Store.listBackups().then(setBackups); }, []);
     const setItem = (id, patch) => setS((o) => ({ ...o, items: o.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
     const setInp = (id, k, v) => setInputs((o) => ({ ...o, [id]: { ...o[id], [k]: v } }));
     const c = (str) => { const p = parseOr(str, 0); return p.ok ? p.cents : 0; };
     const liveAvail = s.items.filter((i) => i.active).reduce((a, i) => a + (i.kind === 'income' ? 1 : -1) * c(inputs[i.id] ? inputs[i.id].amount : ''), 0);
-    const addItem = (kind) => { const id = F.uid(); setS((o) => ({ ...o, items: [...o.items.filter((i) => i.kind !== 'savings' && i.kind !== 'reserve'), { id, name: '', kind, amount: 0, dueDay: null, active: true, aliases: [] }, ...o.items.filter((i) => i.kind === 'savings' || i.kind === 'reserve')] })); setInputs((o) => ({ ...o, [id]: { amount: '', day: '' } })); };
+    const ORDER = { income: 0, bill: 1, budget: 1, savings: 2, reserve: 3 };
+    const addItem = (kind, name = '') => { const id = F.uid(); setS((o) => ({ ...o, items: [...o.items, { id, name, kind, amount: 0, dueDay: null, active: true, aliases: [], ...(kind === 'savings' ? { inGoal: false, goal: 0 } : {}) }].map((x, n) => [x, n]).sort((a, b) => ORDER[a[0].kind] - ORDER[b[0].kind] || a[1] - b[1]).map((x) => x[0]) })); setInputs((o) => ({ ...o, [id]: { amount: '', day: '', goal: '' } })); };
+    const firstPotId = (s.items.find((i) => i.kind === 'savings') || {}).id;
     function savePlan() {
       const out = JSON.parse(JSON.stringify(s));
       for (const i of out.items) {
@@ -597,6 +637,7 @@
         const old = data.settings.items.find((x) => x.id === i.id);
         i.name = i.name.trim(); i.amount = p.cents; i.dueDay = d.day;
         if (!old || old.name !== i.name) i.aliases = F.deriveAliases(i.name);
+        if (i.kind === 'savings') { const g = parseOr(inp.goal || '', 0); if (!g.ok) return setErr(i.name + ', doel: ' + g.error); i.goal = g.cents; i.inGoal = !!i.inGoal; }
       }
       const t = parseOr(goal.target, 0), st = parseOr(goal.stretch, 0);
       if (!t.ok) return setErr('Doel: ' + t.error); if (!st.ok) return setErr('Stretchdoel: ' + st.error);
@@ -624,13 +665,13 @@
     async function backup() { const res = await offerFile('finance-back-up-' + today + '.json', F.exportBackup(data), 'application/json'); toast(res === 'declined' ? 'Back-up niet opgeslagen.' : 'Back-up klaargezet. Bewaar hem in iCloud Drive.'); }
     async function csv() { const res = await offerFile('finance-transacties-' + today + '.csv', F.toCsv(data), 'text/csv'); toast(res === 'declined' ? 'Export niet opgeslagen.' : 'CSV klaargezet.'); }
     const loadText = (text, label) => { const r = F.importBackup(text, today); if (!r.ok) return toast(r.error, 'error'); setPending({ data: r.data, label }); };
-    const groups = [['Inkomen', 'income'], ['Vaste rekeningen', 'bill'], ['Budgetten', 'budget'], ['Sparen en reserveren', 'sr']];
+    const groups = [['Inkomen', 'income'], ['Vaste rekeningen', 'bill'], ['Budgetten', 'budget'], ['Spaarpotjes', 'savings'], ['Reserve', 'reserve']];
     const WEEK = ['zondag', 'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag'];
     const monthsOpts = F.monthRange(F.addMonths(cur, -24), cur);
     return html`<main className="page">
       <h1>Instellingen</h1>
       <${Card}><${Label}>Inkomen en vaste lasten<//>
-        ${groups.map(([title, k]) => { const items = s.items.filter((i) => (k === 'sr' ? i.kind === 'savings' || i.kind === 'reserve' : i.kind === k)); return html`<div key=${k} className="set-group"><span className="field-label">${title}</span>
+        ${groups.map(([title, k]) => { const items = s.items.filter((i) => i.kind === k); return html`<div key=${k} className="set-group"><span className="field-label">${title}</span>
           ${items.map((i) => html`<div key=${i.id} className=${cx('set-item', !i.active && 'inactive')}>
             <div className="setup-row-top"><input className="input grow" aria-label="Naam" value=${i.name} placeholder="Naam" onChange=${(e) => setItem(i.id, { name: e.target.value })} />
               <div className="w-amount"><${AmountInput} id=${'set-' + i.id} value=${inputs[i.id] ? inputs[i.id].amount : ''} onChange=${(v) => setInp(i.id, 'amount', v)} /></div></div>
@@ -638,9 +679,13 @@
               <label className="day-field" htmlFor=${'day-' + i.id}><span className="muted small">Dag</span><input id=${'day-' + i.id} className="input day" inputMode="numeric" placeholder="?" value=${inputs[i.id] ? inputs[i.id].day : ''} onChange=${(e) => setInp(i.id, 'day', e.target.value)} /></label>
               ${i.kind === 'bill' || i.kind === 'budget' ? html`<${Seg} options=${[['bill', 'Rekening'], ['budget', 'Budget']]} value=${i.kind} onChange=${(v) => setItem(i.id, { kind: v })} />` : html`<span className="grow"></span>`}
               <${Toggle} id=${'act-' + i.id} on=${i.active} label=${'Actief: ' + (i.name || 'post')} onChange=${(v) => setItem(i.id, { active: v })} />
-              ${i.kind === 'bill' || i.kind === 'budget' ? html`<button className="icon-btn" aria-label=${'Verwijder ' + i.name} onClick=${() => setS((o) => ({ ...o, items: o.items.filter((x) => x.id !== i.id) }))}><${Icon} n="x" s=${18} /></button>` : null}
-            </div></div>`)}
-          ${k === 'bill' ? html`<button className="link small" onClick=${() => addItem('bill')}>+ Vaste rekening</button>` : k === 'budget' ? html`<button className="link small" onClick=${() => addItem('budget')}>+ Budget</button>` : null}</div>`; })}
+              ${i.kind === 'bill' || i.kind === 'budget' || (i.kind === 'savings' && i.id !== firstPotId) ? html`<button className="icon-btn" aria-label=${'Verwijder ' + i.name} onClick=${() => setS((o) => ({ ...o, items: o.items.filter((x) => x.id !== i.id) }))}><${Icon} n="x" s=${18} /></button>` : null}
+            </div>
+            ${i.kind === 'savings' ? html`<div className="set-item-bottom pot-opts">
+              <label className="day-field grow" htmlFor=${'pg-' + i.id}><span className="muted small">Eigen doel</span><div className="w-amount"><${AmountInput} id=${'pg-' + i.id} placeholder="geen" value=${inputs[i.id] ? inputs[i.id].goal || '' : ''} onChange=${(v) => setInp(i.id, 'goal', v)} /></div></label>
+              <span className="muted small">Telt mee voor spaardoel</span><${Toggle} id=${'ig-' + i.id} on=${!!i.inGoal} label=${'Telt mee voor spaardoel: ' + (i.name || 'potje')} onChange=${(v) => setItem(i.id, { inGoal: v })} />
+            </div>` : null}</div>`)}
+          ${k === 'bill' ? html`<button className="link small" onClick=${() => addItem('bill')}>+ Vaste rekening</button>` : k === 'budget' ? html`<button className="link small" onClick=${() => addItem('budget')}>+ Budget</button>` : k === 'savings' ? html`<button className="link small" onClick=${() => addItem('savings')}>+ Spaarpotje</button><p className="muted tiny">Geef elk potje een naam en een bedrag per maand. Vergeet niet op "Plan en doel opslaan" te tikken.</p>` : null}</div>`; })}
         <div className="sum-line total"><span>Beschikbaar budget</span><span className=${cx('num', liveAvail < 0 && 'warn-text')}>${F.fmt(liveAvail)}</span></div><//>
       <${Card}><${Label}>Spaardoel<//>
         <div className="grid2"><${Field} id="g-t" label="Doel"><${AmountInput} id="g-t" value=${goal.target} onChange=${(v) => setGoal((g) => ({ ...g, target: v }))} /><//>
@@ -801,6 +846,7 @@
 
     const openItem = (m, id) => setSheet({ type: 'item', month: m, itemId: id, k: Date.now() });
     const openTx = (id, preset) => setSheet({ type: 'tx', id, preset, k: Date.now() });
+    const openPot = (potId) => setSheet({ type: 'pot', potId, k: Date.now() });
     const close = () => setSheet(null);
     const dismiss = (key) => commit((d) => ({ data: { ...d, dismissed: [...d.dismissed, key].slice(-300) } }), null, false);
     const replaceData = (next) => { setAndSave(next, dataRef.current, 'Back-up teruggezet', true); };
@@ -811,13 +857,13 @@
       return html`<div className="app">${banner}<${Setup} data=${data} onSave=${(s) => commit((d) => { const r = F.applySettings(d, s, null); return { data: F.ensureMonth(r.data, F.monthOf(today)) }; }, 'Je plan staat klaar', false) && go('dashboard')} onRestore=${(text) => { const r = F.importBackup(text, today); if (!r.ok) return plainToast(r.error, 'error'); replaceData(r.data); }} />
         ${toast ? html`<${Toast} t=${toast} close=${() => setToast(null)} />` : null}</div>`;
     }
-    const sheetTitle = sheet ? (sheet.type === 'assistant' ? 'Meld iets' : sheet.type === 'item' ? (F.monthItemsAll(data, sheet.month).find((i) => i.id === sheet.itemId) || { name: 'Post' }).name + ' · ' + F.monthLabel(sheet.month, false) : sheet.id ? 'Boeking' : 'Nieuwe boeking') : '';
+    const sheetTitle = sheet ? (sheet.type === 'assistant' ? 'Meld iets' : sheet.type === 'pot' ? (data.settings.items.find((i) => i.id === sheet.potId) || { name: 'Potje' }).name : sheet.type === 'item' ? (F.monthItemsAll(data, sheet.month).find((i) => i.id === sheet.itemId) || { name: 'Post' }).name + ' · ' + F.monthLabel(sheet.month, false) : sheet.id ? 'Boeking' : 'Nieuwe boeking') : '';
     return html`<div className="app">
       ${banner}
       <div key=${page} className="page-anim">
         ${page === 'dashboard' ? html`<${Dashboard} data=${data} today=${today} go=${go} openItem=${openItem} dismiss=${dismiss} />` : null}
         ${page === 'maand' ? html`<${MonthPage} data=${data} today=${today} month=${month} setMonth=${setMonth} commit=${commit} openItem=${openItem} openTx=${openTx} />` : null}
-        ${page === 'sparen' ? html`<${SavingsPage} data=${data} today=${today} commit=${commit} openTx=${openTx} />` : null}
+        ${page === 'sparen' ? html`<${SavingsPage} data=${data} today=${today} commit=${commit} openTx=${openTx} openPot=${openPot} />` : null}
         ${page === 'transacties' ? html`<${TxPage} data=${data} today=${today} openTx=${openTx} />` : null}
         ${page === 'instellingen' ? html`<${SettingsPage} data=${data} today=${today} commit=${commit} toast=${plainToast} mode=${mode} replaceData=${replaceData} />` : null}
       </div>
@@ -826,6 +872,7 @@
       <${Sheet} open=${!!sheet} onClose=${close} title=${sheetTitle}>
         ${sheet && sheet.type === 'assistant' ? html`<${Assistant} key=${sheet.k} data=${data} today=${today} commit=${commit} close=${close} />` : null}
         ${sheet && sheet.type === 'item' ? html`<${ItemSheet} key=${sheet.k} data=${data} today=${today} month=${sheet.month} itemId=${sheet.itemId} commit=${commit} close=${close} openTx=${openTx} />` : null}
+        ${sheet && sheet.type === 'pot' ? html`<${PotSheet} key=${sheet.k} data=${data} today=${today} potId=${sheet.potId} openTx=${openTx} />` : null}
         ${sheet && sheet.type === 'tx' ? html`<${TxSheet} key=${sheet.k} data=${data} today=${today} id=${sheet.id} preset=${sheet.preset} commit=${commit} close=${close} />` : null}
       <//>
       ${toast ? html`<${Toast} t=${toast} close=${() => setToast(null)} />` : null}

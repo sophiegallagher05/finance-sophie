@@ -186,3 +186,34 @@ test('herinneringen en komende betalingen', () => {
   assert.equal(up[0].item.id, 'huur'); assert.equal(up[0].label, '8 dagen te laat');
   assert.equal(up.at(-1).label, 'Vervaldatum onbekend');
 });
+
+test('spaarpotjes: saldo per potje en spaardoel telt alleen gekozen potjes', () => {
+  let d = plan();
+  d.settings.items.splice(6, 0,
+    { id: 'pot-a', name: 'Vakantie', kind: 'savings', amount: 5000, dueDay: null, active: true, inGoal: false, goal: 60000, aliases: F.deriveAliases('Vakantie') },
+    { id: 'pot-b', name: 'Beleggen', kind: 'savings', amount: 10000, dueDay: null, active: true, inGoal: false, goal: 0, aliases: F.deriveAliases('Beleggen') });
+  d.settings.items.find((i) => i.id === 'sparen').inGoal = true;
+  const S = F.monthSummary(d, '2026-11', T);
+  assert.equal(S.planned.savings, 30000 + 5000 + 10000);
+  d = F.check(d, '2026-11', 'pot-a', {}, T).data;
+  d = F.check(d, '2026-11', 'sparen', {}, T).data;
+  d = F.addTx(d, { type: 'savings_deposit', amount: 2000, date: T, potId: 'pot-a' }).data;
+  d = F.addTx(d, { type: 'savings_withdrawal', amount: 1000, date: T, potId: 'pot-a' }).data;
+  const pots = Object.fromEntries(F.potStats(d).map((p) => [p.item.id, p]));
+  assert.equal(pots['pot-a'].balance, 5000 + 2000 - 1000);
+  assert.equal(pots['sparen'].balance, 30000);
+  assert.equal(pots['pot-a'].pct, (6000 / 60000) * 100);
+  assert.equal(F.savingsStats(d, T).balance, 30000);
+  // assistent herkent potjes
+  let r = F.parseMessage('€ 50 in vakantie gezet', d, T);
+  assert.equal(r.txType, 'savings_deposit'); assert.equal(r.potId, 'pot-a');
+  r = F.parseMessage('100 euro belegd', d, T);
+  assert.equal(r.op, 'check'); assert.equal(r.itemId, 'pot-b');
+  r = F.parseMessage('80 euro uit vakantie gehaald', d, T);
+  assert.equal(r.txType, 'savings_withdrawal'); assert.equal(r.potId, 'pot-a');
+  assert.equal(F.parseMessage('hoeveel zit er in vakantie?', d, T).title, 'Vakantie');
+  // back-up bewaart potje-velden
+  const back = F.importBackup(F.exportBackup(d), T).data;
+  assert.equal(back.settings.items.find((i) => i.id === 'pot-a').goal, 60000);
+  assert.equal(back.transactions.filter((t) => t.potId === 'pot-a').length, 2);
+});
